@@ -74,10 +74,11 @@ void commstask() {
   digitalWrite(LED_BUILTIN, HIGH);
   char startMarker = '<';
   char endMarker = '>';
+  char excl = '!';
   char comma = ',';
-  snprintf(buf, sizeof(buf)-1, "%c%f%c%f%c%f%c%f%c%f%c%f%c", 
+  snprintf(buf, sizeof(buf)-1, "%c%f%c%f%c%f%c%f%c%f%c%f%c%c", 
                               startMarker,pressArray[j], comma, humidArray[j], comma, tempArray[j], comma,
-                              accelArray_x[j], comma, accelArray_y[j], comma, accelArray_x[j],endMarker);
+                              accelArray_x[j], comma, accelArray_y[j], comma, accelArray_x[j], excl,endMarker);
 
   j++;
   Serial1.write(buf,300);
@@ -142,6 +143,17 @@ void commstask() {
     if (c=='b') recordBegin(); // begins recording. DO NOT DO WITHOUT ERASING FLASH.
     if (c=='n') commsReset(); // resets comms available so flash can be read again
     if (c=='a') commsStatus(); // checks the comms status
+    if (c=='c') communicate();
+  }
+  if (Serial1.available()) {
+    char c = Serial1.read();
+    c=tolower(c);
+    if (c=='e') eraseArrays(); // erases flash memory
+    if (c=='r') readArrays(); // reads flash memory
+    if (c=='b') recordBegin(); // begins recording. DO NOT DO WITHOUT ERASING FLASH.
+    if (c=='n') commsReset(); // resets comms available so flash can be read again
+    if (c=='a') commsStatus(); // checks the comms status
+    if (c=='c') communicate();
   }
   
 
@@ -200,19 +212,24 @@ void recordBegin() {
   if (commsavail == 1) { // only begin recording if comms status is 1, this must be manually set
     ledGreen();
     sensortask();
-    while(j < SZ_ARRAY) {
-      commstask();
-    }
-   commsavail = 0;
-   digitalWrite(GREEN, HIGH);
   }
   else {
     ledRed();
     Serial.print(" interrupt occured, recording stopped at reading ");
     Serial.println( j );
   }
-  
-}
+  }
+
+
+void communicate() {
+  while(j < SZ_ARRAY) {
+      commstask();
+      delay(1000);
+    }
+   commsavail = 0;
+   digitalWrite(GREEN, HIGH);
+  }
+
 
 void commsStatus() {
   Serial.print(" comms status: ");

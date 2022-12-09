@@ -1,20 +1,39 @@
-// Author: Lara Tobias-Tarsh
-// Sketch communicates between Arduino Nano BLE 33 Sense and Arduino Mega 2560
-// Shares temperature, pressure, humidity and acceleration data
-// Read sensors, parses them to a string and sends them to the RX2 port on the Arduino Mega
-// Saves readings in the flash memory of the Arduino Nano BLE 33 Sense for safety
-// Starts recording either through serial monitor (or BLE input - coming soon)
+/* 
+ * AUTHOR: Lara Tobias-Tarsh (laratt@umich.edu)
+ * LAST MODIFIED: 09/12/2022 - functionalised much of the code for readability. Removed redundancies. Added Kalman filter modes.
+ * 
+ * DESCRIPTION:
+ * Code for Arduino 33 BLE Sense payload acting as a sensor package
+ * Nano BLE Sense and the Botletics SIM7000 on the Hologram IOT network.
+ * Records data from onboard sensors necessary for an atmospheric sounding, then communicates via serial
+ * with the communications module (here an Arduino Mega with a Botletics SIM7000 shield) for remote recovery.
+ * Saves all data to flash memory for safety should power cycle during recording.
+ * Has an inbuilt kalman filter than can be controlled via SMS or the serial monitor.
+ * 
+ * USER INPUTS: SZ_ARRAY will define the number of data points recorded during execution of the code. No more than
+ * this will be recorded so choose carefully! Countdown time will allow a certain amount of time before recording begins.
+ * Uncertainty in the Kalman filter parameters can be edited with regards to the sensor in use.
+ * 
+ * 
+ * For further information, including syntax for SMS commands, refer to the README in the GitLab repo found at
+ * https://gitlab.eecs.umich.edu/laratt/balloon-payload . You must request access to this, which I can grant in 
+ * accordance with the Michigan Engineering Honor Code on a case by case basis.
+ * 
+ */
+
+
 
 // include libraries
 #include <Arduino_HTS221.h>
 #include <Arduino_LPS22HB.h>
 #include <Arduino_LSM9DS1.h>
 #include <Nano33BLEflash.h>
+#include <SimpleKalmanFilter.h>
 
 //-------------------------------------------------------------------------------------------
 // INITIALISATION
 //-------------------------------------------------------------------------------------------
-#define SZ_ARRAY 24
+#define SZ_ARRAY 25 //3600 for exactly 2hrs, add safety
 #define RED 22
 #define BLUE 24
 #define GREEN 23
@@ -29,9 +48,9 @@ NANO33BLE_DECLARE(float, accelArray_y)
 NANO33BLE_DECLARE(float, accelArray_z)
 
 // Declare communication string
-char buf[300]; // character buffer
-int commsavail = 1; // ensures flash is not overwritten
-float countdownTime = 40000; // length of countdown before recording begins, change as needed
+char buf[300];                // character buffer
+int commsavail = 1;           // ensures flash is not overwritten
+float countdownTime = 40000;  // length of countdown before recording begins, change as needed
 
 // declare sensor floats
 float pressure;
@@ -42,14 +61,99 @@ float accel_y;
 float accel_z;
 float x,y,z;
 int j = 0; // for communications indexing
+
+// baseline measurements
+float baselinePressure;
+float baselineTemperature;
+float baselineHumidity;
+float baselineAccelx;
+float baselineAccely;
+float baselineAccelz; 
+
   
+//-------------------------------------------------------------------------------------------
+// KALMAN FILTERS
+//-------------------------------------------------------------------------------------------
+/*
+ syntax for: SimpleKalmanFilter(e_mea, e_est, q);
+ e_mea: Measurement Uncertainty 
+ e_est: Estimation Uncertainty 
+ q: Process Noise
+ */
+
+// currently all the same, can change based on calibration
+float kalmanStatus = 0; // status of onboard kalman filter. ON value is 1.
+
+SimpleKalmanFilter pressureKalmanFilter(0.1, 0.1, 0.01);    // kalman filter for pressure
+SimpleKalmanFilter temperatureKalmanFilter(0.1, 0.1, 0.01); // kalman filter for temperature
+SimpleKalmanFilter humidityKalmanFilter(0.1, 0.1, 0.01);    // kalman filter for humidity
+SimpleKalmanFilter accelxKalmanFilter(0.1, 0.1, 0.01);      // kalman filter for x acceleration
+SimpleKalmanFilter accelyKalmanFilter(0.1, 0.1, 0.01);      // kalman filter for y acceleration
+SimpleKalmanFilter accelzKalmanFilter(0.1, 0.1, 0.01);      // kalman filter for z acceleration
+
+void kalmanOn() {
+  kalmanStatus = 1;
+  ledOrange();
+}
+
+void kalmanOff() {
+  kalmanStatus = 0;
+  ledWhite();
+}
+
+void getBaselines() {
+    baselinePressure = round(BARO.readPressure() * 1000);
+    baselineHumidity = round(HTS.readHumidity());
+    baselineTemperature = round(HTS.readTemperature());
+    IMU.readAcceleration(x,y,z);
+    baselineAccelx = x*9.8066;
+    baselineAccely = y*9.8066;
+    baselineAccelz = z*9.8066;
+}
+
+void kalman_sensortask(){
+  // Read each sensor and write to flash memory
+  for (int i = 0; i < SZ_ARRAY; i++) {
+    getBaselines();
+    digitalWrite(LED_BUILTIN, HIGH);
+    ledPurple();
+    // read the sensors
+    pressure = round(BARO.readPressure() * 1000);
+    humidity = round(HTS.readHumidity());
+    temps = round(HTS.readTemperature());
+    IMU.readAcceleration(x,y,z);
+    accel_x = x*9.8066;
+    accel_y = y*9.8066;
+    accel_z = z*9.8066;
+    // write kalman filtered value to memory
+    flashMode(FLASH_WRITE);
+    pressArray[i] = pressureKalmanFilter.updateEstimate(pressure);
+    humidArray[i] = humidityKalmanFilter.updateEstimate(humidity);
+    tempArray[i] = temperatureKalmanFilter.updateEstimate(temps);
+    accelArray_x[i] = accelxKalmanFilter.updateEstimate(accel_x);
+    accelArray_y[i] = accelyKalmanFilter.updateEstimate(accel_y);
+    accelArray_z[i] = accelzKalmanFilter.updateEstimate(accel_z);
+    flashMode(FLASH_READONLY);
+    
+    digitalWrite(LED_BUILTIN, LOW);
+    ledBlue();
+    delay(2000); //every 2 ms
+  }
+  flashMode(FLASH_READONLY);
+  digitalWrite(LED_BUILTIN, LOW);
+  ledGreen();
+}
+
+
 //-------------------------------------------------------------------------------------------
 // SENSOR FUNCTIONS
 //-------------------------------------------------------------------------------------------
 void sensortask(){
+  
   // Read each sensor and write to flash memory
   for (int i = 0; i < SZ_ARRAY; i++) {
     digitalWrite(LED_BUILTIN, HIGH);
+    ledPurple();
     flashMode(FLASH_WRITE);
     pressArray[i] = round(BARO.readPressure() * 1000);
     humidArray[i] = round(HTS.readHumidity());
@@ -63,10 +167,12 @@ void sensortask(){
     accelArray_z[i] = accel_z;
     flashMode(FLASH_READONLY);
     digitalWrite(LED_BUILTIN, LOW);
-    delay(600);
+    ledBlue();
+    delay(2000); //every 2 ms
   }
   flashMode(FLASH_READONLY);
   digitalWrite(LED_BUILTIN, LOW);
+  ledGreen();
 }
 
 void commstask() {
@@ -83,14 +189,16 @@ void commstask() {
   j++;
   Serial1.write(buf,300);
   digitalWrite(LED_BUILTIN, LOW);
-  delay(6000);
 }
 
 //-------------------------------------------------------------------------------------------
 // MAIN EXECUTION
 //-------------------------------------------------------------------------------------------
   void setup() {
-    //commsavail = 1;
+    // redundancy included: force these to a value on restart
+    commsavail = 1;
+    kalmanOff();
+    
     // setup arduino pins
     pinMode(1, OUTPUT); 
     pinMode(LED_BUILTIN, OUTPUT);
@@ -138,22 +246,26 @@ void commstask() {
     if (Serial.available()) {
     char c = Serial.read();
     c=tolower(c);
-    if (c=='e') eraseArrays(); // erases flash memory
-    if (c=='r') readArrays(); // reads flash memory
-    if (c=='b') recordBegin(); // begins recording. DO NOT DO WITHOUT ERASING FLASH.
-    if (c=='n') commsReset(); // resets comms available so flash can be read again
-    if (c=='a') commsStatus(); // checks the comms status
-    if (c=='c') communicate();
+    if (c=='e') eraseArrays();   // erases flash memory
+    if (c=='r') readArrays();    // reads flash memory
+    if (c=='b') recordBegin();   // begins recording. DO NOT DO WITHOUT ERASING FLASH.
+    if (c=='n') commsReset();    // resets comms available so flash can be read again
+    if (c=='a') commsStatus();   // checks the comms status
+    if (c=='c') communicate();   // starts communications with mega
+    if (c=='k') kalmanOn();      // turns the inbuilt kalman filter on
+    if (c=='x') kalmanOff();     // turns the inbuilt kalman filter off
   }
   if (Serial1.available()) {
     char c = Serial1.read();
     c=tolower(c);
-    if (c=='e') eraseArrays(); // erases flash memory
-    if (c=='r') readArrays(); // reads flash memory
-    if (c=='b') recordBegin(); // begins recording. DO NOT DO WITHOUT ERASING FLASH.
-    if (c=='n') commsReset(); // resets comms available so flash can be read again
-    if (c=='a') commsStatus(); // checks the comms status
-    if (c=='c') communicate();
+    if (c=='e') eraseArrays();   // erases flash memory
+    if (c=='r') readArrays();    // reads flash memory
+    if (c=='b') recordBegin();   // begins recording. DO NOT DO WITHOUT ERASING FLASH.
+    if (c=='n') commsReset();    // resets comms available so flash can be read again
+    if (c=='a') commsStatus();   // checks the comms status
+    if (c=='c') communicate();   // starts communications with mega
+    if (c=='k') kalmanOn();      // turns the inbuilt kalman filter on
+    if (c=='x') kalmanOff();     // turns the inbuilt kalman filter off
   }
   
 
@@ -164,24 +276,21 @@ void commstask() {
 //-------------------------------------------------------------------------------------------
 
   void eraseArrays(){
-  // erase the arrays in flash:  set all the bits to one
-  // the next write will faithfully save what was written
-  // this function does nothing with the arrays in RAM.  
-  // Just write to RAM to erase them.
-  int page;
-  flashMode(FLASH_ERASE);
-  for (page=NANO33BLE_FLASH_LOWEST_PAGE;page<flashNumberOfPages;page++) {
-    flashErasePage(page);
+  if (commsavail == 0) {
+    int page;
+    flashMode(FLASH_ERASE);
+    for (page=NANO33BLE_FLASH_LOWEST_PAGE;page<flashNumberOfPages;page++) {
+      flashErasePage(page);
+    }
+    flashMode(FLASH_READONLY);
+    // alternative way to erase all of flash:
+    flashEraseAll();
+    Serial.println("Flash arrays erased");
   }
-  flashMode(FLASH_READONLY);
-  // alternative way to erase all of flash:
-  flashEraseAll();
-  // yet another alternative, erasing the arrays separately.  
-  // can be done this way only if FLASH_TIGHT isn't defined.
-  // can be done here only if the arrays are global.
-
-  
-  Serial.println("Flash arrays erased");
+  else {
+    ledTeal();
+    Serial.println(" data has not been retrieved. Reset commsavail first");
+  }
 }
 
 void readArrays(){
@@ -210,8 +319,13 @@ void recordBegin() {
   delay(countdownTime);
   digitalWrite(BLUE,HIGH);
   if (commsavail == 1) { // only begin recording if comms status is 1, this must be manually set
-    ledGreen();
+    // record sensor readings based on kalman filter status
+    if (kalmanStatus == 1){
+      kalman_sensortask();
+    }
+    else {
     sensortask();
+    }
   }
   else {
     ledRed();
@@ -223,17 +337,29 @@ void recordBegin() {
 
 void communicate() {
   while(j < SZ_ARRAY) {
+      ledOrange();
       commstask();
-      delay(1000);
+      delay(30000);
+      ledPurple();
     }
    commsavail = 0;
    digitalWrite(GREEN, HIGH);
+   delay(2000);
+   ledTeal();
   }
 
 
 void commsStatus() {
   Serial.print(" comms status: ");
   Serial.println(commsavail);
+  if (commsavail==1) {
+    ledGreen();
+    delay(2000);
+    ledWhite();
+  }
+  else {
+    ledTeal();
+  }
   Serial.println();
   Serial.println(" to reset, enter n then erase flash by entering e ");
 }
@@ -241,27 +367,58 @@ void commsStatus() {
 void commsReset() {
   // resets commsavail to allow recording
   commsavail = 1;
-  digitalWrite(RED, HIGH);
-  digitalWrite(GREEN, HIGH);
-  digitalWrite(BLUE, HIGH);
+  ledWhite();
 }
 
-
-// functions to change on board RGB status LED
+//=============================================================
+// functions to change on board RGB status LED       
+//=============================================================
 void ledRed() {
+  // used to indicate errors
   digitalWrite(RED, LOW);
   digitalWrite(GREEN, HIGH);
   digitalWrite(BLUE, HIGH);
 }
 
 void ledBlue() {
+  // used for countdown timers
   digitalWrite(RED, HIGH);
   digitalWrite(GREEN, HIGH);
   digitalWrite(BLUE, LOW);
 }
 
 void ledGreen() {
+  // used to indicate successfully completed task
   digitalWrite(RED, HIGH);
   digitalWrite(GREEN, LOW);
+  digitalWrite(BLUE, HIGH);
+}
+
+void ledPurple() {
+  // used to indicate task in process
+  digitalWrite(RED, LOW);
+  digitalWrite(GREEN, HIGH);
+  digitalWrite(BLUE, LOW);
+}
+
+void ledOrange() {
+  // used to indicate that kalman filter is on
+  digitalWrite(RED, HIGH);
+  digitalWrite(GREEN, HIGH);
+  digitalWrite(BLUE, LOW);
+}
+
+void ledTeal() {
+  // used to indicate task communications status
+  digitalWrite(RED, LOW);
+  digitalWrite(GREEN, HIGH);
+  digitalWrite(BLUE, HIGH);
+}
+
+
+void ledWhite() {
+  // used to indicate readiness for flight
+  digitalWrite(RED, HIGH);
+  digitalWrite(GREEN, HIGH);
   digitalWrite(BLUE, HIGH);
 }

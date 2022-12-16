@@ -27,7 +27,11 @@ If you notice this, open an issue and I will go back and fix it when I have the 
 Note that the Botletics SIM7000A is based on the Adafruit FONA library, so make sure you
 check the repo for the most up to date version of this, or your board will *not* work.
 
-For hardware debugging, I recommend that you add the 
+For hardware debugging, I recommend that you use the Botletics SIM7000 LTE example
+as this allows you to test each component through serial commands. One of the most common
+issues is that the sim slot gets filled and prevents you from sending or recieveing an SMS.
+This can also be cleared using the `m` command in the serial monitor from either of the Mega
+payload sketches.
 
 A .yaml file for the python post-processing script can be found in the main repository. I
 use anaconda for everything so this is a clone of my Conda environment. 
@@ -55,4 +59,5 @@ module and a main script containing examples.
 
 I have provided sample data, courtesy of Eric Andrechek's sounding launch from the University of Michigan's
 ENGR100 section. This is used to demonstrate the functionality of each of these plotting routines.
+
 

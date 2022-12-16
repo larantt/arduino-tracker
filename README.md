@@ -37,7 +37,7 @@ A .yaml file for the python post-processing script can be found in the main repo
 use anaconda for everything so this is a clone of my Conda environment. 
 
 To reproduce my environment, you can clone this file then run the command
-`conda env create -f environment.yml`
+`conda env create -f kalmanfiltering.yml`
 
 
 You will at a minimum need the Arduino IDE to run this project, or at least you need to configure
